@@ -30,6 +30,30 @@ function formatTs(ts) {
   }
 }
 
+function getErrorMessage(err) {
+  if (!err) return 'Could not load anomalies.';
+  if (typeof err === 'string') return err;
+
+  const message = err.message || String(err);
+  try {
+    const parsed = JSON.parse(message);
+    if (Array.isArray(parsed.detail)) {
+      return parsed.detail.map((item) => item.msg || JSON.stringify(item)).join(' ');
+    }
+    if (parsed.detail) return String(parsed.detail);
+  } catch (_) {
+    // Not a JSON API error; use the original message.
+  }
+
+  return message;
+}
+
+function clampScore(value) {
+  const score = Number.parseFloat(value);
+  if (!Number.isFinite(score)) return 0;
+  return Math.min(1, Math.max(0, score));
+}
+
 export default function AnomalyTable({ refreshKey }) {
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
@@ -48,10 +72,11 @@ export default function AnomalyTable({ refreshKey }) {
         offset,
         min_score: minScore > 0 ? minScore : undefined,
       });
-      setRows(data.anomalies ?? data.results ?? []);
-      setTotal(data.total ?? (data.anomalies ?? []).length);
+      const items = data.items ?? data.anomalies ?? data.results ?? [];
+      setRows(items);
+      setTotal(data.total ?? items.length);
     } catch (err) {
-      setError(err.message);
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -63,7 +88,7 @@ export default function AnomalyTable({ refreshKey }) {
 
   // Reset to page 0 when filter changes
   const handleScoreChange = (e) => {
-    setMinScore(parseFloat(e.target.value) || 0);
+    setMinScore(clampScore(e.target.value));
     setOffset(0);
   };
 
@@ -108,6 +133,9 @@ export default function AnomalyTable({ refreshKey }) {
             value={minScore || ''}
             placeholder="0.0"
             onChange={handleScoreChange}
+            onBlur={(e) => {
+              e.target.value = minScore || '';
+            }}
           />
           <button
             className="btn btn-ghost btn-sm"
@@ -184,18 +212,22 @@ export default function AnomalyTable({ refreshKey }) {
               <tbody>
                 {rows.map((row, i) => {
                   const score = row.anomaly_score ?? row.score ?? 0;
+                  const meta = row.metadata ?? {};
+                  const timestamp = row.timestamp ?? meta.timestamp ?? meta.timestamp_raw;
+                  const source = row.source ?? row.filename ?? meta.source_ip ?? '—';
+                  const message = row.message ?? row.raw ?? row.document ?? '';
                   return (
                     <tr key={row.id ?? i} className="table-row">
-                      <td className="td-ts">{formatTs(row.timestamp)}</td>
+                      <td className="td-ts">{formatTs(timestamp)}</td>
                       <td>
                         <span className={`severity-badge ${scoreClass(score)}`}>
                           {scoreLabel(score)}
                         </span>
                       </td>
                       <td className="td-score">{Number(score).toFixed(3)}</td>
-                      <td className="td-source">{row.source ?? row.filename ?? '—'}</td>
-                      <td className="td-message" title={row.message ?? row.raw ?? ''}>
-                        {row.message ?? row.raw ?? JSON.stringify(row)}
+                      <td className="td-source">{source}</td>
+                      <td className="td-message" title={message || JSON.stringify(row)}>
+                        {message || JSON.stringify(row)}
                       </td>
                     </tr>
                   );

@@ -47,7 +47,7 @@ export async function ingestText(text) {
   const res = await fetch(`${BASE}/ingest/text`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content: text }),
+    body: JSON.stringify({ text }),
   });
   return handleResponse(res);
 }

@@ -140,7 +140,7 @@ export default function UploadCard({ onSuccess, onError, onStatsChange }) {
               </p>
             ) : (
               <p className="drop-zone-text">
-                Drop a <strong>.log</strong> file here
+                Drop a <strong>.log</strong> or <strong>.txt</strong> file here
                 <br />
                 <span className="drop-zone-hint">or click to browse</span>
               </p>
@@ -148,7 +148,7 @@ export default function UploadCard({ onSuccess, onError, onStatsChange }) {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".log,.txt,.json"
+              accept=".log,.txt"
               className="sr-only"
               onChange={onFileChange}
               aria-hidden="true"

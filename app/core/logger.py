@@ -69,19 +69,23 @@ def _configure_logger() -> None:
             diagnose=True,
         )
 
-    # Always add a rotating file sink regardless of environment
+    # Always add a rotating file sink regardless of environment.
+    # On restricted Windows shells, creating Loguru's multiprocessing queue can
+    # raise PermissionError during import, so fall back to a direct sink.
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    _loguru_logger.add(
-        str(_LOG_FILE),
-        level=log_level,
-        serialize=True,  # JSON in file for easy parsing
-        rotation="10 MB",
-        retention=5,
-        compression="zip",
-        backtrace=True,
-        diagnose=False,
-        enqueue=True,  # thread-safe async writing
-    )
+    file_sink_config = {
+        "level": log_level,
+        "serialize": True,  # JSON in file for easy parsing
+        "rotation": "10 MB",
+        "retention": 5,
+        "compression": "zip",
+        "backtrace": True,
+        "diagnose": False,
+    }
+    try:
+        _loguru_logger.add(str(_LOG_FILE), enqueue=True, **file_sink_config)
+    except PermissionError:
+        _loguru_logger.add(str(_LOG_FILE), enqueue=False, **file_sink_config)
 
     _CONFIGURED = True
 

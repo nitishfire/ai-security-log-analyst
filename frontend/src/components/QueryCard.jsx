@@ -9,7 +9,7 @@ const EXAMPLE_QUESTIONS = [
   'Which IPs appear most frequently?',
 ];
 
-export default function QueryCard({ onError }) {
+export default function QueryCard({ onError, onSuccess }) {
   const [question, setQuestion] = useState('');
   const [loading, setLoading] = useState(false);
   const [answer, setAnswer] = useState(null);
@@ -26,12 +26,13 @@ export default function QueryCard({ onError }) {
       const result = await queryLogs(q);
       setAnswer(result.answer ?? result.response ?? JSON.stringify(result));
       setSources(result.sources ?? result.context ?? []);
+      onSuccess?.();
     } catch (err) {
       onError(err.message || 'Query failed');
     } finally {
       setLoading(false);
     }
-  }, [question, loading, onError]);
+  }, [question, loading, onError, onSuccess]);
 
   const handleKey = (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit();

@@ -72,11 +72,14 @@ export default function App() {
   // ── Ingest callbacks ───────────────────────────────────────────────────────
   const handleIngestSuccess = useCallback(
     (result) => {
-      const count = result.logs_processed ?? result.ingested ?? result.count ?? '?';
-      addToast(`Ingested ${count} log entries successfully.`, 'success');
+      const count = result.ingested_lines ?? result.logs_processed ?? result.ingested ?? result.count ?? 0;
+      const chunks = result.chunks_stored ?? 0;
+      addToast(`Ingested ${count} log entries and stored ${chunks} chunks.`, 'success');
       setStats((prev) => ({
         ...prev,
         logs_ingested: prev.logs_ingested + (Number(count) || 0),
+        anomalies_found: Number(result.anomalies_found) || prev.anomalies_found,
+        model_status: 'ready',
       }));
       refreshStats();
     },
@@ -97,20 +100,6 @@ export default function App() {
     setStats((prev) => ({ ...prev, queries_run: prev.queries_run + 1 }));
   }, []);
 
-  // Expose handleQuerySuccess so QueryCard can call it:
-  // We pass it wrapped inside a combined error handler
-  const handleQueryErrorWrapper = useCallback(
-    (msg) => {
-      if (!msg) {
-        // called on success (from a previous design) — increment counter
-        handleQuerySuccess();
-      } else {
-        handleQueryError(msg);
-      }
-    },
-    [handleQueryError, handleQuerySuccess]
-  );
-
   return (
     <>
       {/* ── Aurora background layers ── */}
@@ -128,7 +117,7 @@ export default function App() {
             onError={handleIngestError}
             onStatsChange={refreshStats}
           />
-          <QueryCard onError={handleQueryErrorWrapper} />
+          <QueryCard onError={handleQueryError} onSuccess={handleQuerySuccess} />
         </div>
 
         <AnomalyTable refreshKey={tableRefreshKey} />

@@ -10,7 +10,10 @@ function StatCard({ label, value, icon, accent }) {
         {icon}
       </div>
       <div className="stat-body">
-        <span className="stat-value">
+        <span
+          className="stat-value"
+          data-string={typeof value !== 'number' ? 'true' : undefined}
+        >
           {typeof value === 'number' ? display.toLocaleString() : value ?? '—'}
         </span>
         <span className="stat-label">{label}</span>

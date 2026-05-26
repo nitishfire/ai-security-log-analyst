@@ -11,6 +11,8 @@ Run locally:
     uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 """
 
+from __future__ import annotations
+
 # ── Offline / no-telemetry env vars ──────────────────────────────────────────
 # These MUST be set before *any* HuggingFace import so that the httpx client is
 # never initialised in the first place.  Using direct assignment (not setdefault)
@@ -23,8 +25,6 @@ os.environ["HF_DATASETS_OFFLINE"]          = "1"   # no datasets downloads
 os.environ["HF_HUB_DISABLE_TELEMETRY"]    = "1"   # no telemetry HTTP calls
 os.environ["TOKENIZERS_PARALLELISM"]       = "false"  # avoid deadlocks in threads
 # ─────────────────────────────────────────────────────────────────────────────
-
-from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
