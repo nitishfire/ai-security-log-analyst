@@ -31,7 +31,8 @@ export async function fetchHealth() {
 export async function ingestFile(file) {
   const form = new FormData();
   form.append('file', file);
-  const res = await fetch(`${BASE}/ingest/file`, {
+  // Route is POST /ingest (no trailing /file — matches @router.post("") with prefix="/ingest")
+  const res = await fetch(`${BASE}/ingest`, {
     method: 'POST',
     body: form,
   });

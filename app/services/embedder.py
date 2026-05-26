@@ -16,11 +16,17 @@ from app.core.config import get_settings
 from app.core.logger import get_logger
 
 # Force HuggingFace Hub to use the local cache without phoning home.
-# This prevents "Cannot send a request, as the client has been closed"
-# errors when the corporate SSL proxy blocks outbound HTTPS to hf.co.
-# The model must already be present in ~/.cache/huggingface/hub/.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+# Prevents "Cannot send a request, as the client has been closed" errors
+# that occur when the corporate SSL proxy blocks outbound HTTPS to hf.co,
+# or when uvicorn hot-reloads and the async httpx client is tied to a
+# stale event loop.  Using direct assignment so a hot-reload cycle cannot
+# silently restore the wrong value via setdefault.
+# (app/main.py also sets these before ANY imports as the primary guard.)
+os.environ["HF_HUB_OFFLINE"]           = "1"
+os.environ["TRANSFORMERS_OFFLINE"]      = "1"
+os.environ["HF_DATASETS_OFFLINE"]       = "1"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+os.environ["TOKENIZERS_PARALLELISM"]    = "false"
 
 logger = get_logger(__name__)
 
