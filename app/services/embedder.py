@@ -8,11 +8,19 @@ The model is loaded once (singleton) and reused across calls.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import List, Optional
 
 from app.core.config import get_settings
 from app.core.logger import get_logger
+
+# Force HuggingFace Hub to use the local cache without phoning home.
+# This prevents "Cannot send a request, as the client has been closed"
+# errors when the corporate SSL proxy blocks outbound HTTPS to hf.co.
+# The model must already be present in ~/.cache/huggingface/hub/.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 logger = get_logger(__name__)
 
