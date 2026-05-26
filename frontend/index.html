@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Security Log Analyst</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="app-shell">
+
+  <!-- ── Header ──────────────────────────────────────────────── -->
+  <header>
+    <h1>🔐 AI Security Log <span>Analyst</span></h1>
+    <div class="status-indicator">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">Checking…</span>
+    </div>
+  </header>
+
+  <!-- ── Stats Bar ────────────────────────────────────────────── -->
+  <div class="stats-bar">
+    <div class="stat-item">
+      <div class="stat-label">Total Logs</div>
+      <div class="stat-value" id="stat-total">—</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-label">Anomalies</div>
+      <div class="stat-value danger" id="stat-anomalies">—</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-label">Anomaly Rate</div>
+      <div class="stat-value warning" id="stat-rate">—</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-label">Model</div>
+      <div class="stat-value" id="stat-model" style="font-size:.85rem">—</div>
+    </div>
+    <div class="stat-item">
+      <div class="stat-label">Embedding</div>
+      <div class="stat-value" id="stat-embedding" style="font-size:.75rem">—</div>
+    </div>
+  </div>
+
+  <!-- ── Main content ─────────────────────────────────────────── -->
+  <main>
+
+    <!-- ── Upload panel ───────────────────────────────────────── -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Upload Logs</span>
+        <span class="card-icon">📁</span>
+      </div>
+
+      <div class="drop-zone" id="drop-zone">
+        <input type="file" id="file-input" accept=".log,.txt" />
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#00e5cc" stroke-width="1.5">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <p><strong>Click or drag</strong> a .log / .txt file here</p>
+        <p id="drop-filename" style="color:var(--accent);margin-top:4px"></p>
+      </div>
+
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-primary" id="btn-upload" disabled>
+          <span id="upload-spinner" style="display:none" class="spinner"></span>
+          Upload &amp; Ingest
+        </button>
+        <button class="btn btn-secondary" id="btn-clear-upload">Clear</button>
+      </div>
+
+      <div id="ingest-result" style="display:none"></div>
+    </div>
+
+    <!-- ── Query panel ────────────────────────────────────────── -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Natural Language Query</span>
+        <span class="card-icon">🔍</span>
+      </div>
+
+      <textarea id="query-input" rows="3"
+        placeholder="e.g. Show me all failed login attempts"></textarea>
+
+      <div class="toggle-row">
+        <input type="checkbox" id="anomaly-only" />
+        <label for="anomaly-only">Restrict to anomalous logs only</label>
+      </div>
+
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-primary" id="btn-query">
+          <span id="query-spinner" style="display:none" class="spinner"></span>
+          Ask
+        </button>
+        <button class="btn btn-secondary" id="btn-clear-query">Clear</button>
+        <label for="top-k" style="color:var(--muted);font-size:.8rem;margin-left:auto">Top-K</label>
+        <input type="number" id="top-k" value="5" min="1" max="20"
+          style="width:60px;padding:6px 8px;font-size:.82rem" />
+      </div>
+
+      <div id="answer-container" style="display:none">
+        <div class="answer-box" id="answer-box"></div>
+        <div class="timing" id="query-timing"></div>
+        <details class="sources" id="sources-details">
+          <summary>View sources</summary>
+          <div id="sources-list"></div>
+        </details>
+      </div>
+    </div>
+
+    <!-- ── Anomaly table (full width) ─────────────────────────── -->
+    <div class="card anomaly-card">
+      <div class="card-header">
+        <span class="card-title">Anomalous Entries</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-secondary" id="btn-refresh-anomalies" style="padding:5px 12px;font-size:.78rem">
+            <span id="anom-spinner" style="display:none" class="spinner"></span>
+            Refresh
+          </button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="anomaly-table">
+          <thead>
+            <tr>
+              <th>Score</th>
+              <th>IP</th>
+              <th>Status</th>
+              <th>Path</th>
+              <th>Log Excerpt</th>
+            </tr>
+          </thead>
+          <tbody id="anomaly-tbody">
+            <tr>
+              <td colspan="5" class="placeholder">
+                Upload logs to see anomaly detections
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ── Toast container ──────────────────────────────────────────── -->
+<div id="toast-container"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

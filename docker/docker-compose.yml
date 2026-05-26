@@ -1,0 +1,53 @@
+version: "3.9"
+
+services:
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ai-security-log-analyst:latest
+    container_name: ai-security-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../data:/app/data        # persist ChromaDB, logs, and models
+      - ../logs:/app/logs        # persist application logs
+    env_file:
+      - ../.env
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434   # override for container networking
+    depends_on:
+      ollama:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - analyst-net
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ai-security-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    command: serve
+    restart: unless-stopped
+    networks:
+      - analyst-net
+    # Uncomment for GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  ollama_data:
+    name: ai-security-ollama-data
+
+networks:
+  analyst-net:
+    name: ai-security-network
