@@ -39,3 +39,7 @@ htmlcov/
 
 # Docker
 docker/ollama_data/
+
+# Frontend (Node / Vite)
+frontend/node_modules/
+frontend/dist/

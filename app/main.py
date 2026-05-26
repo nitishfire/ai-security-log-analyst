@@ -121,11 +121,6 @@ def create_app() -> FastAPI:
     app.include_router(query.router)
     app.include_router(anomaly.router)
 
-    # Serve frontend static files
-    frontend_dir = Path("frontend")
-    if frontend_dir.exists():
-        app.mount("/frontend", StaticFiles(directory=str(frontend_dir)), name="frontend")
-
     # ── Health check ─────────────────────────────────────────────────────────
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     async def health_check() -> HealthResponse:
@@ -146,7 +141,13 @@ def create_app() -> FastAPI:
     # ── Root redirect ─────────────────────────────────────────────────────────
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
-        return RedirectResponse(url="/frontend/index.html")
+        return RedirectResponse(url="/app/index.html")
+
+    # Serve React build (frontend/dist/).  Mount LAST so API routes take priority.
+    # In dev mode the Vite dev server handles this; the built dist/ is for prod.
+    react_dist = Path("frontend/dist")
+    if react_dist.exists():
+        app.mount("/app", StaticFiles(directory=str(react_dist), html=True), name="frontend")
 
     return app
 
