@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 from app.core.logger import get_logger
 from app.models.log_entry import LogEntry
@@ -148,6 +148,67 @@ def chunk_logs(
         f"(chunk_size={chunk_size}, overlap={overlap})"
     )
     return chunks
+
+
+def chunk_logs_indexed(
+    entries: List[LogEntry],
+    chunk_size: int = 500,
+    overlap: int = 50,
+) -> Tuple[List[str], List[int]]:
+    """
+    Like :func:`chunk_logs` but also returns the *representative entry index*
+    for each chunk.
+
+    The representative index is the index of the last entry whose text was
+    appended to the chunk's buffer before it was flushed.  This gives a
+    correct mapping from chunk → LogEntry for metadata annotation.
+
+    Returns:
+        Tuple of (chunks, entry_indices) where ``entry_indices[i]`` is the
+        index into *entries* that best represents chunk *i*.
+    """
+    if not entries:
+        return [], []
+
+    chunks: List[str] = []
+    entry_indices: List[int] = []
+    current_lines: List[str] = []
+    current_length = 0
+    current_entry_idx = 0
+
+    for pos, entry in enumerate(entries):
+        line_text = entry.to_chunk_text()
+        line_len = len(line_text)
+
+        if line_len >= chunk_size:
+            if current_lines:
+                chunks.append("\n".join(current_lines))
+                entry_indices.append(current_entry_idx)
+                current_lines, current_length = _trim_to_overlap(current_lines, overlap)
+
+            for sub_chunk in textwrap.wrap(line_text, width=chunk_size):
+                chunks.append(sub_chunk)
+                entry_indices.append(pos)
+            continue
+
+        if current_length + line_len + 1 > chunk_size and current_lines:
+            chunks.append("\n".join(current_lines))
+            entry_indices.append(current_entry_idx)
+            current_lines, current_length = _trim_to_overlap(current_lines, overlap)
+
+        current_lines.append(line_text)
+        current_length += line_len + 1
+        current_entry_idx = pos
+
+    if current_lines:
+        chunks.append("\n".join(current_lines))
+        entry_indices.append(current_entry_idx)
+
+    logger.debug(
+        f"Chunked {len(entries)} entries into {len(chunks)} indexed chunks "
+        f"(chunk_size={chunk_size}, overlap={overlap})"
+    )
+    return chunks, entry_indices
 
 
 def load_and_chunk(

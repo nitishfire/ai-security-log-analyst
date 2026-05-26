@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
     detector = get_detector()
     sample_log = Path("data/raw_logs/sample_access.log")
     try:
-        if Path("data/models/isolation_forest.pkl").exists():
+        if Path(settings.anomaly_model_path).exists():
             detector.load_or_fit([])  # will load from disk
         elif sample_log.exists():
             entries = load_log_file(str(sample_log))
@@ -101,11 +101,17 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS — allow all origins for development
+    # CORS — configured from settings.
+    # NOTE: allow_origins=["*"] and allow_credentials=True is an invalid CORS
+    # combination (browsers will reject it). When origins is "*" we disable
+    # credentials so the wildcard is valid. For production, set CORS_ORIGINS to
+    # a comma-separated list of allowed origins and credentials will be enabled.
+    raw_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    wildcard = raw_origins == ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=raw_origins,
+        allow_credentials=not wildcard,  # credentials require explicit origins
         allow_methods=["*"],
         allow_headers=["*"],
     )

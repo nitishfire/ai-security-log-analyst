@@ -17,6 +17,7 @@ from app.models.query_models import (
     AnomalySummaryResponse,
 )
 from app.services import vector_store as vs
+from app.services.vector_store import count_anomalies
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/anomalies", tags=["anomalies"])
@@ -45,9 +46,8 @@ async def list_anomalies(
             )
         )
 
-    # Total count query (without pagination)
-    total_raw = vs.get_all_anomalies(limit=10_000, offset=0, min_score=min_score)
-    total = len(total_raw["ids"])
+    # Efficient total count — no document fetch needed
+    total = count_anomalies(min_score=min_score)
 
     return AnomalyListResponse(
         items=items,

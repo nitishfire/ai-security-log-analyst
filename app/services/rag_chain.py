@@ -43,19 +43,35 @@ Answer:"""
 # LLM helpers
 # ---------------------------------------------------------------------------
 
+# Module-level LLM cache: reuse the same instance across requests to avoid
+# re-constructing the Ollama client on every query.
+_llm_instance = None
+_llm_cache_key: tuple | None = None
+
+
 def _get_llm():
     """
-    Return a LangChain Ollama LLM instance.
+    Return a cached LangChain Ollama LLM instance.
+
+    The instance is recreated only when settings (base_url / model) change.
     Returns *None* if the library is not available (graceful fallback).
     """
+    global _llm_instance, _llm_cache_key
     settings = get_settings()
+    cache_key = (settings.ollama_base_url, settings.ollama_model)
+
+    if _llm_instance is not None and _llm_cache_key == cache_key:
+        return _llm_instance
+
     try:
         from langchain_community.llms import Ollama  # noqa: PLC0415
-        return Ollama(
+        _llm_instance = Ollama(
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
             temperature=0.1,  # Low temperature for factual log analysis
         )
+        _llm_cache_key = cache_key
+        return _llm_instance
     except ImportError as exc:
         logger.warning(f"langchain_community not available: {exc}")
         return None

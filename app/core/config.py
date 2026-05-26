@@ -4,6 +4,9 @@ All values can be overridden via environment variables or .env file.
 """
 
 from functools import lru_cache
+from urllib.parse import urlparse
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,6 +46,30 @@ class Settings(BaseSettings):
 
     # Anomaly detection
     anomaly_contamination: float = 0.05
+    anomaly_model_path: str = "./data/models/isolation_forest.pkl"
+
+    # CORS
+    cors_origins: str = "*"  # Comma-separated list; use "*" for dev only
+
+    # ── Validators ──────────────────────────────────────────────────────────
+
+    @field_validator("ollama_base_url")
+    @classmethod
+    def validate_ollama_url(cls, v: str) -> str:
+        """
+        Prevent SSRF: reject non-HTTP(S) schemes for OLLAMA_BASE_URL.
+
+        This blocks ``file://``, ``ftp://``, ``gopher://`` and other schemes
+        that could be exploited to read local files or probe internal services.
+        Both ``http://`` and ``https://`` are accepted regardless of the target
+        host, enabling local, Docker, and remote deployments.
+        """
+        parsed = urlparse(v)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(
+                f"OLLAMA_BASE_URL must use http or https scheme, got: {parsed.scheme!r}"
+            )
+        return v
 
 
 @lru_cache(maxsize=1)

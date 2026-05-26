@@ -12,16 +12,20 @@ Features extracted per log entry:
   - request_rate_1min    Rolling count of requests from same IP in the batch
                          (approximated as per-batch frequency)
 
-The trained model is persisted to data/models/isolation_forest.pkl.
+The trained model is persisted to the path configured in ANOMALY_MODEL_PATH.
+A SHA-256 digest file (.sha256) is written alongside the model and verified
+on every load to detect accidental or malicious tampering.
 """
 
 from __future__ import annotations
 
-import pickle
+import hashlib
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import joblib
 import numpy as np
 from sklearn.ensemble import IsolationForest
 
@@ -30,8 +34,6 @@ from app.core.logger import get_logger
 from app.models.log_entry import LogEntry
 
 logger = get_logger(__name__)
-
-_MODEL_PATH = Path("data/models/isolation_forest.pkl")
 
 # Keywords that indicate suspicious / high-risk URL paths
 _SUSPICIOUS_PATH_KEYWORDS = {
@@ -49,6 +51,19 @@ class AnomalyResult:
     is_anomaly: bool
     anomaly_score: float          # -1.0 (most anomalous) to 1.0 (most normal)
     features: Dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _sha256_of_file(path: Path) -> str:
+    """Return the lowercase hex SHA-256 digest of *path*."""
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(65536), b""):
+            h.update(block)
+    return h.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +153,9 @@ class AnomalyDetector:
         settings = get_settings()
         self._model: Optional[IsolationForest] = None
         self._contamination = settings.anomaly_contamination
-        self._model_path = _MODEL_PATH
+        self._model_path = Path(settings.anomaly_model_path)
+        self._digest_path = self._model_path.with_suffix(".sha256")
+        self._lock = threading.Lock()
 
     def fit(self, log_entries: List[LogEntry]) -> None:
         """
@@ -234,14 +251,30 @@ class AnomalyDetector:
             self.fit(log_entries)
 
     def _save(self) -> None:
+        """Persist the model with joblib and write a SHA-256 digest for integrity checks."""
         self._model_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._model_path.open("wb") as fh:
-            pickle.dump(self._model, fh)
-        logger.debug(f"Model saved to {self._model_path}")
+        joblib.dump(self._model, self._model_path)
+        digest = _sha256_of_file(self._model_path)
+        self._digest_path.write_text(digest, encoding="utf-8")
+        logger.debug(f"Model saved to {self._model_path} (sha256={digest[:12]}…)")
 
     def _load(self) -> None:
-        with self._model_path.open("rb") as fh:
-            self._model = pickle.load(fh)  # noqa: S301
+        """Load the model, verifying SHA-256 integrity before deserializing."""
+        if self._digest_path.exists():
+            expected = self._digest_path.read_text(encoding="utf-8").strip()
+            actual = _sha256_of_file(self._model_path)
+            if actual != expected:
+                raise RuntimeError(
+                    f"Model integrity check FAILED for {self._model_path}. "
+                    f"Expected sha256={expected[:12]}…, got {actual[:12]}…. "
+                    "Delete the model file and re-ingest to rebuild it."
+                )
+        else:
+            logger.warning(
+                f"No .sha256 digest found for {self._model_path} — "
+                "skipping integrity check (legacy model file)."
+            )
+        self._model = joblib.load(self._model_path)
         logger.info(f"Loaded IsolationForest from {self._model_path}")
 
     @property
@@ -254,11 +287,14 @@ class AnomalyDetector:
 # ---------------------------------------------------------------------------
 
 _detector: Optional[AnomalyDetector] = None
+_detector_lock = threading.Lock()
 
 
 def get_detector() -> AnomalyDetector:
-    """Return the module-level AnomalyDetector singleton."""
+    """Return the module-level AnomalyDetector singleton (thread-safe)."""
     global _detector
     if _detector is None:
-        _detector = AnomalyDetector()
+        with _detector_lock:
+            if _detector is None:  # double-checked locking
+                _detector = AnomalyDetector()
     return _detector

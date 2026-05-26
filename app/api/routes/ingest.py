@@ -5,25 +5,26 @@ POST /ingest/text  — raw log text in request body
 
 from __future__ import annotations
 
-import io
+import asyncio
 import time
 import uuid
 from typing import List
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
 from app.core.logger import get_logger
 from app.models.log_entry import LogEntry
 from app.models.query_models import IngestResponse, IngestTextRequest
 from app.services import vector_store as vs
 from app.services.anomaly_detector import get_detector
-from app.services.ingestion import chunk_logs, load_log_file
+from app.services.ingestion import chunk_logs_indexed
 from app.utils.log_parser import auto_detect_and_parse
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/ingest", tags=["ingestion"])
 
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_LINE_LEN = 10_000  # guard against ReDoS via pathologically long lines
 
 
 # ---------------------------------------------------------------------------
@@ -31,19 +32,22 @@ MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 # ---------------------------------------------------------------------------
 
 def _process_entries(entries: List[LogEntry]) -> IngestResponse:
-    """Run anomaly detection, chunk, embed, and store; return response."""
-    t_start = time.perf_counter()
+    """Run anomaly detection, chunk, embed, and store; return response.
 
-    settings_obj = vs.get_collection_stats  # just to import config lazily
+    This is CPU/IO-bound — callers should run it via
+    ``asyncio.get_event_loop().run_in_executor(None, _process_entries, entries)``
+    so the async event loop is not blocked.
+    """
     from app.core.config import get_settings  # noqa: PLC0415
     settings = get_settings()
+
+    t_start = time.perf_counter()
 
     # ── Anomaly detection ────────────────────────────────────────────────────
     detector = get_detector()
     if not detector.is_fitted and entries:
         detector.fit(entries)
 
-    anomaly_results = []
     anomalies_found = 0
     if detector.is_fitted:
         anomaly_results = detector.predict(entries)
@@ -53,30 +57,32 @@ def _process_entries(entries: List[LogEntry]) -> IngestResponse:
             entry.is_anomaly = result.is_anomaly
             entry.anomaly_score = result.anomaly_score
 
-    # ── Chunk ────────────────────────────────────────────────────────────────
-    chunks = chunk_logs(
+    # ── Chunk (with per-chunk entry tracking) ────────────────────────────────
+    chunks, entry_indices = chunk_logs_indexed(
         entries,
         chunk_size=settings.max_chunk_size,
         overlap=settings.chunk_overlap,
     )
 
-    # ── Build metadata ───────────────────────────────────────────────────────
+    # ── Build metadata using the correct representative entry per chunk ───────
     metadatas = []
     ids = []
-    for i, chunk in enumerate(chunks):
+    for i, (chunk, entry_idx) in enumerate(zip(chunks, entry_indices)):
         doc_id = str(uuid.uuid4())
         ids.append(doc_id)
-        # Attach anomaly metadata from the first entry that contributed to this chunk
-        # (simplification: use chunk index to approximate)
-        entry_idx = min(i, len(entries) - 1)
         entry = entries[entry_idx]
+        path_preview = ""
+        if entry.path:
+            path_preview = entry.path[:50]
+        elif entry.message:
+            path_preview = entry.message[:50]
         metadatas.append({
-            "chunk_index":  i,
-            "is_anomaly":   entry.is_anomaly,
+            "chunk_index":   i,
+            "is_anomaly":    entry.is_anomaly,
             "anomaly_score": entry.anomaly_score,
-            "source_ip":    entry.source_ip or "",
-            "status_code":  entry.status_code or 0,
-            "path":         entry.path or entry.message[:50] if entry.message else "",
+            "source_ip":     entry.source_ip or "",
+            "status_code":   entry.status_code or 0,
+            "path":          path_preview,
         })
 
     # ── Store ─────────────────────────────────────────────────────────────────
@@ -99,6 +105,12 @@ def _parse_raw_text(text: str) -> List[LogEntry]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
+        # Guard against pathologically long lines that could trigger ReDoS
+        if len(line) > MAX_LINE_LEN:
+            logger.warning(
+                f"Line {lineno}: exceeds max length {MAX_LINE_LEN} chars, truncating"
+            )
+            line = line[:MAX_LINE_LEN]
         try:
             parsed = auto_detect_and_parse(line)
             if parsed:
@@ -149,8 +161,13 @@ async def ingest_file(file: UploadFile = File(...)) -> IngestResponse:
             detail="No parseable log lines found in the uploaded file.",
         )
 
-    logger.info(f"Ingesting file '{filename}': {len(entries)} entries")
-    return _process_entries(entries)
+    # Sanitize filename for logging to prevent log-injection via user-supplied names
+    safe_name = filename.replace("\n", "\\n").replace("\r", "\\r")[:200]
+    logger.info(f"Ingesting file '{safe_name}': {len(entries)} entries")
+
+    # Offload CPU/IO-bound processing to a thread so the event loop stays free
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _process_entries, entries)
 
 
 @router.post("/text", response_model=IngestResponse, status_code=status.HTTP_200_OK)
@@ -166,4 +183,7 @@ async def ingest_text(body: IngestTextRequest) -> IngestResponse:
             detail="No parseable log lines found in the provided text.",
         )
     logger.info(f"Ingesting text: {len(entries)} entries")
-    return _process_entries(entries)
+
+    # Offload CPU/IO-bound processing to a thread so the event loop stays free
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _process_entries, entries)

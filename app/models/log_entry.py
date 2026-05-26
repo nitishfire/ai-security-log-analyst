@@ -5,10 +5,10 @@ Pydantic models for normalised log entries.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Supported Apache timestamp formats
 _APACHE_TS_FMT = "%d/%b/%Y:%H:%M:%S %z"
@@ -51,7 +51,7 @@ def _parse_timestamp(raw: Optional[str]) -> Optional[datetime]:
     # Syslog (inject current year)
     try:
         dt = datetime.strptime(raw, _SYSLOG_TS_FMT)
-        return dt.replace(year=datetime.utcnow().year)
+        return dt.replace(year=datetime.now(tz=timezone.utc).year)
     except ValueError:
         pass
 
@@ -84,7 +84,7 @@ class LogEntry(BaseModel):
     pid: Optional[int] = None
 
     # Extra k/v pairs captured from generic format
-    extra: dict[str, Any] = {}
+    extra: dict[str, Any] = Field(default_factory=dict)
 
     # Anomaly metadata (set after anomaly detection pass)
     is_anomaly: bool = False
