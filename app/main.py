@@ -19,17 +19,17 @@ from __future__ import annotations
 # so they can't be overridden by a stale os.environ entry from a previous
 # hot-reload cycle.
 import os
-os.environ["HF_HUB_OFFLINE"]              = "1"   # no hub downloads
-os.environ["TRANSFORMERS_OFFLINE"]         = "1"   # no transformers downloads
-os.environ["HF_DATASETS_OFFLINE"]          = "1"   # no datasets downloads
-os.environ["HF_HUB_DISABLE_TELEMETRY"]    = "1"   # no telemetry HTTP calls
-os.environ["TOKENIZERS_PARALLELISM"]       = "false"  # avoid deadlocks in threads
+os.environ["HF_HUB_OFFLINE"]           = "1"   # no hub downloads
+os.environ["TRANSFORMERS_OFFLINE"]      = "1"   # no transformers downloads
+os.environ["HF_DATASETS_OFFLINE"]       = "1"   # no datasets downloads
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"   # no telemetry HTTP calls
+os.environ["TOKENIZERS_PARALLELISM"]    = "false"  # avoid deadlocks in threads
 # ─────────────────────────────────────────────────────────────────────────────
 
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -102,6 +102,10 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
 
+    # Disable interactive docs in production (set DOCS_ENABLED=false).
+    # Keeping them on for dev/demo (default = enabled).
+    docs_enabled = os.environ.get("DOCS_ENABLED", "true").lower() not in ("false", "0", "no")
+
     app = FastAPI(
         title="AI Security Log Analyst",
         description=(
@@ -109,12 +113,39 @@ def create_app() -> FastAPI:
             "Upload logs, query them in natural language, and surface anomalies."
         ),
         version="1.0.0",
-        docs_url="/docs",
-        redoc_url="/redoc",
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
         lifespan=lifespan,
     )
 
-    # CORS — configured from settings.
+    # ── Security headers ─────────────────────────────────────────────────────
+    # Applied to every response before it leaves the server.
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next) -> Response:
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = (
+            "geolocation=(), microphone=(), camera=(), payment=()"
+        )
+        # Content-Security-Policy: allow self + CDN fonts + Ollama API.
+        # unsafe-inline for styles is required by React's inline style props.
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "font-src 'self' https://cdn.jsdelivr.net; "
+            "img-src 'self' data:; "
+            "connect-src 'self' http://localhost:11434; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self';"
+        )
+        return response
+
+    # ── CORS ─────────────────────────────────────────────────────────────────
     # NOTE: allow_origins=["*"] and allow_credentials=True is an invalid CORS
     # combination (browsers will reject it). When origins is "*" we disable
     # credentials so the wildcard is valid. For production, set CORS_ORIGINS to
@@ -125,8 +156,8 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=raw_origins,
         allow_credentials=not wildcard,  # credentials require explicit origins
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Accept", "Authorization"],
     )
 
     # API routers

@@ -10,9 +10,10 @@ import time
 import uuid
 from typing import List
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
 from app.core.logger import get_logger
+from app.core.rate_limit import ingest_limiter
 from app.models.log_entry import LogEntry
 from app.models.query_models import IngestResponse, IngestTextRequest
 from app.services import vector_store as vs
@@ -26,22 +27,35 @@ router = APIRouter(prefix="/ingest", tags=["ingestion"])
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 MAX_LINE_LEN = 10_000  # guard against ReDoS via pathologically long lines
 
+# Allowed MIME types for uploaded log files
+_ALLOWED_CONTENT_TYPES = frozenset({
+    "text/plain",
+    "text/x-log",
+    "application/octet-stream",  # Many browsers send this for unknown extensions
+    "",                          # Some clients omit content-type entirely
+})
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _process_entries(entries: List[LogEntry]) -> IngestResponse:
+def _process_entries(
+    entries: List[LogEntry],
+    source_name: str = "Unknown source",
+    upload_id: str | None = None,
+) -> IngestResponse:
     """Run anomaly detection, chunk, embed, and store; return response.
 
     This is CPU/IO-bound — callers should run it via
-    ``asyncio.get_event_loop().run_in_executor(None, _process_entries, entries)``
+    ``asyncio.get_running_loop().run_in_executor(None, _process_entries, ...)``
     so the async event loop is not blocked.
     """
     from app.core.config import get_settings  # noqa: PLC0415
     settings = get_settings()
 
     t_start = time.perf_counter()
+    upload_id = upload_id or str(uuid.uuid4())
 
     # ── Anomaly detection ────────────────────────────────────────────────────
     detector = get_detector()
@@ -78,6 +92,8 @@ def _process_entries(entries: List[LogEntry]) -> IngestResponse:
             path_preview = entry.message[:50]
         metadatas.append({
             "chunk_index":   i,
+            "upload_id":     upload_id,
+            "source_name":   source_name,
             "is_anomaly":    entry.is_anomaly,
             "anomaly_score": entry.anomaly_score,
             "source_ip":     entry.source_ip or "",
@@ -95,6 +111,8 @@ def _process_entries(entries: List[LogEntry]) -> IngestResponse:
         chunks_stored=len(chunks),
         anomalies_found=anomalies_found,
         time_ms=elapsed_ms,
+        source_name=source_name,
+        upload_id=upload_id,
     )
 
 
@@ -124,14 +142,19 @@ def _parse_raw_text(text: str) -> List[LogEntry]:
 # Routes
 # ---------------------------------------------------------------------------
 
-@router.post("", response_model=IngestResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "",
+    response_model=IngestResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(ingest_limiter)],
+)
 async def ingest_file(file: UploadFile = File(...)) -> IngestResponse:
     """
     Upload a .log or .txt file to ingest into the vector database.
 
-    Max file size: 10 MB.
+    Max file size: 10 MB.  Rate-limited to 10 requests per minute per IP.
     """
-    # Validate content type / extension
+    # Validate extension — primary guard
     filename = file.filename or ""
     if not filename.lower().endswith((".log", ".txt")):
         raise HTTPException(
@@ -139,6 +162,7 @@ async def ingest_file(file: UploadFile = File(...)) -> IngestResponse:
             detail="Only .log and .txt files are accepted.",
         )
 
+    # Read content — enforces the 10 MB size limit
     content = await file.read()
     if len(content) > MAX_FILE_SIZE_BYTES:
         raise HTTPException(
@@ -161,20 +185,28 @@ async def ingest_file(file: UploadFile = File(...)) -> IngestResponse:
             detail="No parseable log lines found in the uploaded file.",
         )
 
-    # Sanitize filename for logging to prevent log-injection via user-supplied names
+    # Sanitize filename for logging (prevent log-injection via user-supplied names)
     safe_name = filename.replace("\n", "\\n").replace("\r", "\\r")[:200]
     logger.info(f"Ingesting file '{safe_name}': {len(entries)} entries")
+    upload_id = str(uuid.uuid4())
 
     # Offload CPU/IO-bound processing to a thread so the event loop stays free
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _process_entries, entries)
+    # Python 3.10+ deprecates get_event_loop() — use get_running_loop() instead.
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _process_entries, entries, safe_name, upload_id)
 
 
-@router.post("/text", response_model=IngestResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/text",
+    response_model=IngestResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(ingest_limiter)],
+)
 async def ingest_text(body: IngestTextRequest) -> IngestResponse:
     """
-    Ingest raw log text sent in the request body.
-    Useful for testing without file upload.
+    Ingest raw log text sent in the request body (max 512 KB).
+
+    Rate-limited to 10 requests per minute per IP.
     """
     entries = _parse_raw_text(body.text)
     if not entries:
@@ -183,7 +215,7 @@ async def ingest_text(body: IngestTextRequest) -> IngestResponse:
             detail="No parseable log lines found in the provided text.",
         )
     logger.info(f"Ingesting text: {len(entries)} entries")
+    upload_id = str(uuid.uuid4())
 
-    # Offload CPU/IO-bound processing to a thread so the event loop stays free
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _process_entries, entries)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _process_entries, entries, "Pasted text", upload_id)

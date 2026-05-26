@@ -3,6 +3,7 @@ import { ingestFile, ingestText } from '../api.js';
 
 const PREVIEW_LINES = 10;
 const PREVIEW_BYTES = 16 * 1024;
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB — mirrors backend limit
 
 function readFilePreview(file) {
   return new Promise((resolve, reject) => {
@@ -28,6 +29,13 @@ export default function UploadCard({ onSuccess, onError, onStatsChange }) {
 
   const selectFile = useCallback(
     async (file) => {
+      // Client-side size guard — gives immediate feedback before upload starts
+      if (file.size > MAX_FILE_BYTES) {
+        onError(
+          `File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum is 10 MB.`
+        );
+        return;
+      }
       setSelectedFile(file);
       setFilePreview('');
       setIngestResult(null);

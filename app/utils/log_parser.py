@@ -7,14 +7,20 @@ Regex parsers for three common log formats:
 
 Each parser returns a normalised dict:
   {
-      "timestamp":  str | None,
-      "source_ip":  str | None,
-      "log_level":  str | None,
-      "message":    str,
-      "raw":        str,
+      "timestamp":   str | None,
+      "source_ip":   str | None,
+      "log_level":   str | None,
+      "message":     str,
+      "raw":         str,
       "format_type": str,
       # format-specific extras kept as top-level keys
   }
+
+Security note — parse_kv:
+  The KV parser was previously vulnerable to a key-overwrite issue where
+  a log line like ``src_ip=real_ip timestamp=injected`` could silently
+  replace the top-level reserved keys in the returned dict.  This is now
+  prevented by filtering KV pairs through ``_RESERVED_KEYS`` before merging.
 """
 
 import re
@@ -25,15 +31,15 @@ from typing import Optional
 #    127.0.0.1 - frank [10/Oct/2000:13:55:36 -0700] "GET /index.html HTTP/1.1" 200 2326 "-" "Mozilla/5.0"
 # ---------------------------------------------------------------------------
 _APACHE_PATTERN = re.compile(
-    r'(?P<source_ip>\S+)'           # client IP
-    r'\s+\S+'                       # ident (usually -)
-    r'\s+\S+'                       # auth user (usually -)
-    r'\s+\[(?P<timestamp>[^\]]+)\]' # [timestamp]
-    r'\s+"(?P<method>\S+)'          # HTTP method
-    r'\s+(?P<path>\S+)'             # URL path
-    r'\s+(?P<protocol>[^"]+)"'      # protocol
-    r'\s+(?P<status_code>\d{3})'    # HTTP status
-    r'\s+(?P<bytes_sent>\S+)'       # bytes (may be -)
+    r'(?P<source_ip>\S+)'            # client IP
+    r'\s+\S+'                        # ident (usually -)
+    r'\s+\S+'                        # auth user (usually -)
+    r'\s+\[(?P<timestamp>[^\]]+)\]'  # [timestamp]
+    r'\s+"(?P<method>\S+)'           # HTTP method
+    r'\s+(?P<path>\S+)'              # URL path
+    r'\s+(?P<protocol>[^"]+)"'       # protocol
+    r'\s+(?P<status_code>\d{3})'     # HTTP status
+    r'\s+(?P<bytes_sent>\S+)'        # bytes (may be -)
     r'(?:\s+"(?P<referer>[^"]*)")?'  # optional referer
     r'(?:\s+"(?P<user_agent>[^"]*)")?'  # optional user-agent
 )
@@ -59,6 +65,13 @@ _KV_PATTERN = re.compile(
     r'(?P<kv_pairs>.*)'
 )
 _KV_PAIR = re.compile(r'(\w+)=([^\s"]+|"[^"]*")')
+
+# Keys that must not be overwritten by user-supplied KV pairs in log lines.
+# A malicious or malformed log line of the form ``timestamp=foo source_ip=bar``
+# would otherwise silently replace our carefully extracted values.
+_RESERVED_KEYS = frozenset({
+    "timestamp", "source_ip", "log_level", "message", "raw", "format_type",
+})
 
 
 def _safe_int(value: Optional[str], default: int = 0) -> int:
@@ -92,12 +105,12 @@ def parse_apache(line: str) -> Optional[dict]:
         "raw": line,
         "format_type": "apache",
         # extra fields
-        "method": d.get("method"),
-        "path": d.get("path"),
+        "method":      d.get("method"),
+        "path":        d.get("path"),
         "status_code": _safe_int(d.get("status_code")),
-        "bytes_sent": _safe_int(d.get("bytes_sent")),
-        "user_agent": d.get("user_agent"),
-        "referer": d.get("referer"),
+        "bytes_sent":  _safe_int(d.get("bytes_sent")),
+        "user_agent":  d.get("user_agent"),
+        "referer":     d.get("referer"),
     }
 
 
@@ -117,16 +130,16 @@ def parse_syslog(line: str) -> Optional[dict]:
     ip_match = re.search(r'\b(\d{1,3}(?:\.\d{1,3}){3})\b', msg)
 
     return {
-        "timestamp": d.get("timestamp"),
-        "source_ip": ip_match.group(1) if ip_match else None,
-        "log_level": _syslog_message_to_level(msg),
-        "message": msg,
-        "raw": line,
+        "timestamp":   d.get("timestamp"),
+        "source_ip":   ip_match.group(1) if ip_match else None,
+        "log_level":   _syslog_message_to_level(msg),
+        "message":     msg,
+        "raw":         line,
         "format_type": "syslog",
         # extra fields
         "hostname": d.get("hostname"),
-        "process": d.get("process"),
-        "pid": _safe_int(d.get("pid")),
+        "process":  d.get("process"),
+        "pid":      _safe_int(d.get("pid")),
     }
 
 
@@ -135,28 +148,34 @@ def parse_kv(line: str) -> Optional[dict]:
     Parse a generic timestamp + optional level + key=value format.
 
     Returns a normalised dict or *None* if no timestamp is detected.
+
+    Security: user-controlled KV pairs are filtered against ``_RESERVED_KEYS``
+    before merging to prevent log-injection from overwriting extracted fields.
     """
     m = _KV_PATTERN.match(line.strip())
     if not m:
         return None
 
     d = m.groupdict()
-    kv_pairs = dict(
+    raw_kv = dict(
         (k, v.strip('"'))
         for k, v in _KV_PAIR.findall(d.get("kv_pairs", ""))
     )
 
-    source_ip = kv_pairs.get("src_ip") or kv_pairs.get("source_ip") or kv_pairs.get("ip")
+    # Protect reserved keys: only merge KV pairs that do not shadow them.
+    safe_kv = {k: v for k, v in raw_kv.items() if k not in _RESERVED_KEYS}
+
+    source_ip = raw_kv.get("src_ip") or raw_kv.get("source_ip") or raw_kv.get("ip")
 
     return {
-        "timestamp": d.get("timestamp"),
-        "source_ip": source_ip,
-        "log_level": d.get("log_level") or kv_pairs.get("level") or kv_pairs.get("log_level"),
-        "message": d.get("kv_pairs", "").strip(),
-        "raw": line,
+        "timestamp":   d.get("timestamp"),
+        "source_ip":   source_ip,
+        "log_level":   d.get("log_level") or raw_kv.get("level") or raw_kv.get("log_level"),
+        "message":     d.get("kv_pairs", "").strip(),
+        "raw":         line,
         "format_type": "kv",
-        # expose all parsed k/v pairs at top level for convenience
-        **kv_pairs,
+        # Merge safe (non-reserved) KV pairs for downstream field extraction
+        **safe_kv,
     }
 
 
@@ -176,11 +195,11 @@ def auto_detect_and_parse(line: str) -> Optional[dict]:
 
     # Fallback: treat the whole line as a raw message
     return {
-        "timestamp": None,
-        "source_ip": None,
-        "log_level": "UNKNOWN",
-        "message": line,
-        "raw": line,
+        "timestamp":   None,
+        "source_ip":   None,
+        "log_level":   "UNKNOWN",
+        "message":     line,
+        "raw":         line,
         "format_type": "unknown",
     }
 
@@ -196,8 +215,6 @@ def _http_status_to_level(status: Optional[str]) -> str:
         return "ERROR"
     if code >= 400:
         return "WARNING"
-    if code >= 300:
-        return "INFO"
     return "INFO"
 
 

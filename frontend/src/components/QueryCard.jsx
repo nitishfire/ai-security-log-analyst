@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { queryLogs } from '../api.js';
 
+const MAX_QUESTION_LEN = 2000; // mirrors backend QueryRequest.question max_length
+
 const EXAMPLE_QUESTIONS = [
   'What are the most common error types?',
   'Are there any signs of brute-force attacks?',
@@ -98,11 +100,27 @@ export default function QueryCard({ onError }) {
             rows={3}
             placeholder="Ask a question about your logs… (Ctrl+Enter to submit)"
             value={question}
-            onChange={(e) => setQuestion(e.target.value)}
+            onChange={(e) => setQuestion(e.target.value.slice(0, MAX_QUESTION_LEN))}
             onKeyDown={handleKey}
             aria-label="Security query"
             spellCheck={false}
+            maxLength={MAX_QUESTION_LEN}
           />
+          {question.length > MAX_QUESTION_LEN * 0.9 && (
+            <span
+              style={{
+                position: 'absolute',
+                bottom: '66px',
+                right: '72px',
+                fontSize: '.68rem',
+                fontFamily: 'var(--mono)',
+                color: question.length >= MAX_QUESTION_LEN ? 'var(--danger)' : 'var(--muted)',
+              }}
+              aria-live="polite"
+            >
+              {question.length}/{MAX_QUESTION_LEN}
+            </span>
+          )}
           <button
             className="btn-glyph"
             onClick={submit}

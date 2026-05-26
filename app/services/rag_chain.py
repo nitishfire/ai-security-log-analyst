@@ -10,10 +10,21 @@ Architecture:
 Usage:
     from app.services.rag_chain import query
     result = query("Show me all failed login attempts")
+
+Security notes:
+  - User question is sanitized by the Pydantic model (QueryRequest) before
+    reaching this module (control chars stripped, max 2 000 chars).
+  - The prompt template uses a strict "answer only from the logs" instruction
+    to reduce the attack surface of prompt-injection attempts.
+  - The LLM instance is created once per settings combination (cached) under
+    a thread lock to prevent duplicate initialisation under concurrent load.
+  - Ollama reachability is cached for 15 s to avoid adding a round-trip to
+    every query.
 """
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -27,9 +38,11 @@ logger = get_logger(__name__)
 # Prompt template
 # ---------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = """You are a cybersecurity analyst assistant. \
-Use ONLY the following log excerpts to answer the question. \
-If the answer is not in the logs, say "Not found in logs."
+_SYSTEM_PROMPT = """\
+You are a cybersecurity analyst assistant. \
+Use ONLY the log excerpts provided below to answer the question. \
+Do not speculate beyond the provided data. \
+If the answer is not present in the logs, respond with exactly: "Not found in logs."
 
 Log Context:
 {context}
@@ -40,18 +53,17 @@ Answer:"""
 
 
 # ---------------------------------------------------------------------------
-# LLM helpers
+# LLM helpers — thread-safe singleton with settings-keyed cache
 # ---------------------------------------------------------------------------
 
-# Module-level LLM cache: reuse the same instance across requests to avoid
-# re-constructing the Ollama client on every query.
 _llm_instance = None
 _llm_cache_key: tuple | None = None
+_llm_lock = threading.Lock()   # prevent double-initialisation under load
 
 
 def _get_llm():
     """
-    Return a cached LangChain Ollama LLM instance.
+    Return a cached LangChain Ollama LLM instance (thread-safe).
 
     The instance is recreated only when settings (base_url / model) change.
     Returns *None* if the library is not available (graceful fallback).
@@ -60,32 +72,68 @@ def _get_llm():
     settings = get_settings()
     cache_key = (settings.ollama_base_url, settings.ollama_model)
 
+    # Fast path: no lock needed when already initialised with the right key
     if _llm_instance is not None and _llm_cache_key == cache_key:
         return _llm_instance
 
-    try:
-        from langchain_community.llms import Ollama  # noqa: PLC0415
-        _llm_instance = Ollama(
-            base_url=settings.ollama_base_url,
-            model=settings.ollama_model,
-            temperature=0.1,  # Low temperature for factual log analysis
-        )
-        _llm_cache_key = cache_key
-        return _llm_instance
-    except ImportError as exc:
-        logger.warning(f"langchain_community not available: {exc}")
-        return None
+    with _llm_lock:
+        # Double-checked locking: re-test inside the lock
+        if _llm_instance is not None and _llm_cache_key == cache_key:
+            return _llm_instance
+
+        try:
+            from langchain_community.llms import Ollama  # noqa: PLC0415
+            _llm_instance = Ollama(
+                base_url=settings.ollama_base_url,
+                model=settings.ollama_model,
+                temperature=0.1,  # low temperature → factual, deterministic log analysis
+            )
+            _llm_cache_key = cache_key
+            return _llm_instance
+        except ImportError as exc:
+            logger.warning(f"langchain_community not available: {exc}")
+            return None
+
+
+# ---------------------------------------------------------------------------
+# Ollama reachability — TTL-cached to avoid N+1 HTTP pings per query
+# ---------------------------------------------------------------------------
+
+_OLLAMA_TTL: float = 15.0          # seconds before re-checking
+_ollama_reachable: Optional[bool] = None
+_ollama_checked_at: float = 0.0
+_ollama_lock = threading.Lock()
 
 
 def _is_ollama_reachable() -> bool:
-    """Ping the Ollama server; return True if reachable."""
-    import httpx  # noqa: PLC0415
-    settings = get_settings()
-    try:
-        r = httpx.get(f"{settings.ollama_base_url}/api/tags", timeout=3.0)
-        return r.status_code == 200
-    except Exception:  # noqa: BLE001
-        return False
+    """
+    Return True if the Ollama server is reachable.
+
+    The result is cached for 15 s so we add at most one extra HTTP request
+    every 15 s rather than on every query call.
+    """
+    global _ollama_reachable, _ollama_checked_at
+
+    now = time.monotonic()
+    if _ollama_reachable is not None and (now - _ollama_checked_at) < _OLLAMA_TTL:
+        return _ollama_reachable
+
+    with _ollama_lock:
+        # Double-checked: another thread may have refreshed while we waited
+        now = time.monotonic()
+        if _ollama_reachable is not None and (now - _ollama_checked_at) < _OLLAMA_TTL:
+            return _ollama_reachable
+
+        import httpx  # noqa: PLC0415
+        settings = get_settings()
+        try:
+            r = httpx.get(f"{settings.ollama_base_url}/api/tags", timeout=3.0)
+            _ollama_reachable = r.status_code == 200
+        except Exception:  # noqa: BLE001
+            _ollama_reachable = False
+
+        _ollama_checked_at = time.monotonic()
+        return _ollama_reachable
 
 
 # ---------------------------------------------------------------------------
@@ -100,19 +148,24 @@ def query(
     """
     Run the full RAG pipeline for *question*.
 
+    **Threading:** this function is synchronous and CPU/IO-bound (embedding
+    inference + optional LLM call).  The route handler (`query.py`) declares
+    it as a plain `def` endpoint so FastAPI runs it in a thread-pool worker
+    automatically, keeping the async event loop free.
+
     Args:
-        question:              The natural language question.
+        question:              Sanitized natural language question.
         top_k:                 Number of context chunks to retrieve.
                                Defaults to RAG_TOP_K from config.
         filter_anomalies_only: If True, restrict retrieval to anomalous docs.
 
     Returns:
         {
-            "answer":          str,
-            "source_chunks":   List[str],
-            "retrieval_time_ms": int,
-            "llm_time_ms":     int,
-            "error":           str | None,
+            "answer":              str,
+            "source_chunks":       List[dict],
+            "retrieval_time_ms":   int,
+            "llm_time_ms":         int,
+            "error":               str | None,
         }
     """
     settings = get_settings()
@@ -137,7 +190,44 @@ def query(
         }
 
     retrieval_ms = int((time.perf_counter() - t_retrieval_start) * 1000)
+
+    # Deduplicate identical chunks (e.g. same file ingested multiple times)
+    deduped_results: List[Dict[str, Any]] = []
+    seen_docs: Dict[str, int] = {}
+    for result in results:
+        document = result.get("document") or ""
+        existing_idx = seen_docs.get(document)
+        if existing_idx is None:
+            seen_docs[document] = len(deduped_results)
+            deduped_results.append(result)
+            continue
+
+        existing_meta = deduped_results[existing_idx].get("metadata") or {}
+        new_meta = result.get("metadata") or {}
+        if not existing_meta.get("source_name") and new_meta.get("source_name"):
+            deduped_results[existing_idx] = result
+    results = deduped_results
+
     source_chunks: List[str] = [r["document"] for r in results]
+    source_refs: List[Dict[str, Any]] = []
+
+    for idx, result in enumerate(results, start=1):
+        metadata = result.get("metadata") or {}
+        document = result.get("document") or ""
+        source_name = metadata.get("source_name") or "Unknown upload"
+        source_refs.append({
+            "source_name": source_name,
+            "upload_id":   metadata.get("upload_id") or "",
+            "chunk_index": metadata.get("chunk_index"),
+            "source_ip":   metadata.get("source_ip") or "",
+            "status_code": metadata.get("status_code") or 0,
+            "path":        metadata.get("path") or "",
+            "distance":    result.get("distance"),
+            "preview":     document[:400],
+        })
+        source_chunks[idx - 1] = (
+            f"[Source: {source_name}, chunk {metadata.get('chunk_index', idx)}]\n{document}"
+        )
 
     if not source_chunks:
         return {
@@ -154,7 +244,6 @@ def query(
     # ── LLM call ─────────────────────────────────────────────────────────────
     t_llm_start = time.perf_counter()
 
-    # Check Ollama availability before attempting inference
     if not _is_ollama_reachable():
         logger.warning("Ollama is not reachable — returning context-only response.")
         llm_ms = int((time.perf_counter() - t_llm_start) * 1000)
@@ -163,7 +252,7 @@ def query(
                 "LLM unavailable (Ollama not running). "
                 "Retrieved context shown in sources."
             ),
-            "source_chunks": source_chunks,
+            "source_chunks": source_refs,
             "retrieval_time_ms": retrieval_ms,
             "llm_time_ms": llm_ms,
             "error": "Ollama not reachable",
@@ -173,14 +262,13 @@ def query(
     if llm is None:
         return {
             "answer": "LLM library not available.",
-            "source_chunks": source_chunks,
+            "source_chunks": source_refs,
             "retrieval_time_ms": retrieval_ms,
             "llm_time_ms": 0,
             "error": "langchain_community unavailable",
         }
 
     try:
-        # LangChain v0.2 simple invocation
         answer = llm.invoke(prompt_text)
         if not isinstance(answer, str):
             answer = str(answer)
@@ -193,7 +281,7 @@ def query(
 
     return {
         "answer": answer.strip(),
-        "source_chunks": source_chunks,
+        "source_chunks": source_refs,
         "retrieval_time_ms": retrieval_ms,
         "llm_time_ms": llm_ms,
         "error": None,
@@ -204,12 +292,10 @@ def build_rag_chain():
     """
     Return a LangChain LCEL chain object for advanced usage.
     Falls back to None if dependencies are missing.
-
-    The chain: retriever | format_docs | prompt | llm | StrOutputParser
     """
     try:
-        from langchain_core.prompts import PromptTemplate  # noqa: PLC0415
         from langchain_core.output_parsers import StrOutputParser  # noqa: PLC0415
+        from langchain_core.prompts import PromptTemplate  # noqa: PLC0415
         from langchain_core.runnables import RunnablePassthrough  # noqa: PLC0415
     except ImportError as exc:
         logger.warning(f"LangChain core not available for chain building: {exc}")
