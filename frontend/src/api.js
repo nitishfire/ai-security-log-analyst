@@ -24,14 +24,19 @@ export async function fetchHealth() {
   return handleResponse(res);
 }
 
+/** GET /anomalies/summary */
+export async function fetchAnomalySummary() {
+  const res = await fetch(`${BASE}/anomalies/summary`);
+  return handleResponse(res);
+}
+
 /**
- * POST /ingest/file — upload a log file
+ * POST /ingest — upload a log file
  * @param {File} file
  */
 export async function ingestFile(file) {
   const form = new FormData();
   form.append('file', file);
-  // Route is POST /ingest (no trailing /file — matches @router.post("") with prefix="/ingest")
   const res = await fetch(`${BASE}/ingest`, {
     method: 'POST',
     body: form,
@@ -55,12 +60,17 @@ export async function ingestText(text) {
 /**
  * POST /query — ask the RAG chain a question
  * @param {string} question
+ * @param {{ filterAnomaliesOnly?: boolean, topK?: number }} opts
  */
-export async function queryLogs(question) {
+export async function queryLogs(question, { filterAnomaliesOnly = false, topK = 5 } = {}) {
   const res = await fetch(`${BASE}/query`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({
+      question,
+      filter_anomalies_only: filterAnomaliesOnly,
+      top_k: topK,
+    }),
   });
   return handleResponse(res);
 }

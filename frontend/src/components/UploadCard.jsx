@@ -1,6 +1,20 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { ingestFile, ingestText } from '../api.js';
-import { useMouseGlow } from '../hooks/useMouseGlow.js';
+
+const PREVIEW_LINES = 10;
+const PREVIEW_BYTES = 16 * 1024;
+
+function readFilePreview(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || '');
+      resolve(text.split(/\r?\n/).slice(0, PREVIEW_LINES).join('\n'));
+    };
+    reader.onerror = () => reject(reader.error || new Error('Could not read file preview'));
+    reader.readAsText(file.slice(0, PREVIEW_BYTES));
+  });
+}
 
 export default function UploadCard({ onSuccess, onError, onStatsChange }) {
   const [mode, setMode] = useState('file'); // 'file' | 'text'
@@ -8,8 +22,23 @@ export default function UploadCard({ onSuccess, onError, onStatsChange }) {
   const [loading, setLoading] = useState(false);
   const [textValue, setTextValue] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
+  const [filePreview, setFilePreview] = useState('');
+  const [ingestResult, setIngestResult] = useState(null);
   const fileInputRef = useRef(null);
-  const handleGlow = useMouseGlow();
+
+  const selectFile = useCallback(
+    async (file) => {
+      setSelectedFile(file);
+      setFilePreview('');
+      setIngestResult(null);
+      try {
+        setFilePreview(await readFilePreview(file));
+      } catch (err) {
+        onError(err.message || 'Could not preview file');
+      }
+    },
+    [onError]
+  );
 
   const submit = useCallback(
     async (file, text) => {
@@ -26,10 +55,12 @@ export default function UploadCard({ onSuccess, onError, onStatsChange }) {
           setLoading(false);
           return;
         }
+        setIngestResult(result);
         onSuccess(result);
         onStatsChange?.();
         setTextValue('');
         setSelectedFile(null);
+        setFilePreview('');
         if (fileInputRef.current) fileInputRef.current.value = '';
       } catch (err) {
         onError(err.message || 'Ingest failed');
@@ -41,60 +72,45 @@ export default function UploadCard({ onSuccess, onError, onStatsChange }) {
   );
 
   // ── Drag-and-drop ────────────────────────────────────────────────────────
-  const onDragOver = (e) => {
-    e.preventDefault();
-    setDragging(true);
-  };
+  const onDragOver = (e) => { e.preventDefault(); setDragging(true); };
   const onDragLeave = () => setDragging(false);
   const onDrop = (e) => {
     e.preventDefault();
     setDragging(false);
     const file = e.dataTransfer.files?.[0];
-    if (file) {
-      setSelectedFile(file);
-      setMode('file');
-      submit(file, '');
-    }
+    if (file) { setMode('file'); selectFile(file); }
   };
-
   const onFileChange = (e) => {
     const file = e.target.files?.[0];
-    if (file) setSelectedFile(file);
+    if (file) selectFile(file);
+  };
+
+  const clearAll = () => {
+    setSelectedFile(null);
+    setFilePreview('');
+    setTextValue('');
+    setIngestResult(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   return (
-    <div className="card" onMouseMove={handleGlow}>
-      <div className="card-header">
-        <h2 className="card-title">
-          <svg viewBox="0 0 20 20" fill="none" className="card-title-icon" aria-hidden="true">
-            <path
-              d="M10 3v10M6 9l4-6 4 6"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <path
-              d="M3 15h14"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
-          </svg>
-          Ingest Logs
-        </h2>
-
-        {/* Mode toggle */}
-        <div className="toggle-group" role="group" aria-label="Input mode">
+    <section className="block" id="ingest">
+      {/* ── Block header ────────────────────────────────────────── */}
+      <div className="block__head">
+        <span className="block__num">01</span>
+        <h2 className="block__title">Ingest</h2>
+        <span className="block__hint">.log · .txt</span>
+        {/* Mode tabs — has margin-left: auto in CSS */}
+        <div className="mode-tabs" role="group" aria-label="Input mode">
           <button
-            className={`toggle-btn ${mode === 'file' ? 'active' : ''}`}
+            className={`mode-tab${mode === 'file' ? ' active' : ''}`}
             onClick={() => setMode('file')}
             type="button"
           >
             File
           </button>
           <button
-            className={`toggle-btn ${mode === 'text' ? 'active' : ''}`}
+            className={`mode-tab${mode === 'text' ? ' active' : ''}`}
             onClick={() => setMode('text')}
             type="button"
           >
@@ -103,10 +119,12 @@ export default function UploadCard({ onSuccess, onError, onStatsChange }) {
         </div>
       </div>
 
-      <div className="card-body">
+      {/* ── 2-column ingest grid ─────────────────────────────────── */}
+      <div className="ingest">
+        {/* Col 1: drop zone or textarea */}
         {mode === 'file' ? (
           <div
-            className={`drop-zone ${dragging ? 'drop-zone--active' : ''}`}
+            className={`drop-zone${dragging ? ' drag-over' : ''}`}
             onDragOver={onDragOver}
             onDragLeave={onDragLeave}
             onDrop={onDrop}
@@ -116,35 +134,33 @@ export default function UploadCard({ onSuccess, onError, onStatsChange }) {
             aria-label="Click or drag a log file to upload"
             onKeyDown={(e) => e.key === 'Enter' && fileInputRef.current?.click()}
           >
-            <svg
-              className="drop-zone-icon"
-              viewBox="0 0 48 48"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M8 36h32M24 12v20M16 20l8-8 8 8"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-            {selectedFile ? (
-              <p className="drop-zone-text">
-                <strong>{selectedFile.name}</strong>
-                <br />
-                <span className="drop-zone-hint">
-                  {(selectedFile.size / 1024).toFixed(1)} KB — click to change
-                </span>
-              </p>
-            ) : (
-              <p className="drop-zone-text">
-                Drop a <strong>.log</strong> or <strong>.txt</strong> file here
-                <br />
-                <span className="drop-zone-hint">or click to browse</span>
-              </p>
-            )}
+            <div className="drop-zone__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" width="22" height="22">
+                <path
+                  d="M12 3v13M7 8l5-5 5 5M3 19h18"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
+            <div className="drop-zone__text">
+              {selectedFile ? (
+                <>
+                  <strong>{selectedFile.name}</strong>
+                  <span>
+                    {(selectedFile.size / 1024).toFixed(1)} KB
+                    <span> — click to change</span>
+                  </span>
+                </>
+              ) : (
+                <>
+                  <strong>Drop a .log or .txt file here</strong>
+                  <span>or click to browse</span>
+                </>
+              )}
+            </div>
             <input
               ref={fileInputRef}
               type="file"
@@ -162,29 +178,81 @@ export default function UploadCard({ onSuccess, onError, onStatsChange }) {
             value={textValue}
             onChange={(e) => setTextValue(e.target.value)}
             spellCheck={false}
+            aria-label="Paste log text"
           />
         )}
 
-        <button
-          className="btn btn-primary"
-          onClick={() => submit(selectedFile, textValue)}
-          disabled={
-            loading ||
-            (mode === 'file' && !selectedFile) ||
-            (mode === 'text' && !textValue.trim())
-          }
-          type="button"
-        >
-          {loading ? (
-            <>
-              <span className="spinner" aria-hidden="true" />
-              Ingesting…
-            </>
-          ) : (
-            'Ingest Logs'
+        {/* Col 2: action buttons */}
+        <div className="ingest__actions">
+          <button
+            className="btn btn-primary"
+            onClick={() => submit(selectedFile, textValue)}
+            disabled={
+              loading ||
+              (mode === 'file' && !selectedFile) ||
+              (mode === 'text' && !textValue.trim())
+            }
+            type="button"
+          >
+            {loading ? (
+              <><span className="spinner" aria-hidden="true" /> Ingesting…</>
+            ) : (
+              'Ingest Logs'
+            )}
+          </button>
+
+          {(selectedFile || textValue || ingestResult) && (
+            <button
+              className="btn btn-ghost"
+              type="button"
+              onClick={clearAll}
+            >
+              Clear
+            </button>
           )}
-        </button>
+        </div>
+
+        {/* Full-width file preview (grid-column: 1 / -1 in CSS) */}
+        {mode === 'file' && selectedFile && filePreview && (
+          <div className="file-preview">
+            <div className="file-preview-head">
+              <span>{selectedFile.name}</span>
+              <span>First {PREVIEW_LINES} lines</span>
+            </div>
+            <pre>{filePreview}</pre>
+          </div>
+        )}
+
+        {/* Full-width ingest result (grid-column: 1 / -1 in CSS) */}
+        <div className={`ingest-result-strip${ingestResult ? ' show' : ''}`} aria-live="polite">
+          {ingestResult && (
+            <div className="ingest-result">
+              <div className="ingest-result-item">
+                <div className="num">
+                  {ingestResult.ingested_lines ??
+                    ingestResult.logs_processed ??
+                    ingestResult.ingested ??
+                    ingestResult.count ??
+                    0}
+                </div>
+                <div className="lbl">Lines</div>
+              </div>
+              <div className="ingest-result-item">
+                <div className="num">{ingestResult.chunks_stored ?? 0}</div>
+                <div className="lbl">Chunks</div>
+              </div>
+              <div className="ingest-result-item">
+                <div className="num">{ingestResult.anomalies_found ?? 0}</div>
+                <div className="lbl">Anomalies</div>
+              </div>
+              <div className="ingest-result-item">
+                <div className="num" style={{ color: 'var(--success)' }}>✓</div>
+                <div className="lbl">Stored</div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </section>
   );
 }

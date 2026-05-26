@@ -1,29 +1,29 @@
 import React, { useEffect } from 'react';
 
-/** Single toast message */
+/** Single toast notification */
 function Toast({ toast, onDismiss }) {
   useEffect(() => {
     const timer = setTimeout(() => onDismiss(toast.id), toast.duration ?? 4000);
     return () => clearTimeout(timer);
   }, [toast, onDismiss]);
 
+  // CSS expects: .toast.success / .toast.error / .toast.info
   return (
     <div
-      className={`toast toast--${toast.type ?? 'info'}`}
+      className={`toast ${toast.type ?? 'info'}`}
       role="status"
       aria-live="polite"
     >
       <span className="toast-icon" aria-hidden="true">
         {toast.type === 'success' && '✓'}
         {toast.type === 'error' && '✕'}
-        {toast.type === 'info' && 'ℹ'}
-        {!toast.type && 'ℹ'}
+        {(toast.type === 'info' || !toast.type) && 'ℹ'}
       </span>
       <span className="toast-message">{toast.message}</span>
       <button
         className="toast-close"
         onClick={() => onDismiss(toast.id)}
-        aria-label="Dismiss"
+        aria-label="Dismiss notification"
         type="button"
       >
         ×
@@ -32,7 +32,7 @@ function Toast({ toast, onDismiss }) {
   );
 }
 
-/** Container — rendered at root level, fixed top-right */
+/** Fixed bottom-right toast stack */
 export default function ToastContainer({ toasts, onDismiss }) {
   if (!toasts.length) return null;
 
