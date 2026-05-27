@@ -20,12 +20,17 @@ function renderSourceMeta(src) {
   return bits.join(' · ');
 }
 
+function renderSourceTitle(src, index) {
+  if (typeof src === 'string') return `Source ${index + 1}`;
+  return src.source_name || src.upload_id || `Source ${index + 1}`;
+}
+
 function renderSourcePreview(src) {
   if (typeof src === 'string') return src;
   return src.preview || src.document || JSON.stringify(src);
 }
 
-export default function QueryCard({ onError }) {
+export default function QueryCard({ activeUpload, onError }) {
   const [question, setQuestion] = useState('');
   const [filterAnomaliesOnly, setFilterAnomaliesOnly] = useState(false);
   const [topK, setTopK] = useState(5);
@@ -34,17 +39,26 @@ export default function QueryCard({ onError }) {
   const [sources, setSources] = useState([]);
   const [elapsed, setElapsed] = useState(null);
   const textareaRef = useRef(null);
+  const canAsk = Boolean(activeUpload?.upload_id);
 
   const submit = useCallback(async () => {
     const q = question.trim();
     if (!q || loading) return;
+    if (!canAsk) {
+      onError('Upload or paste a log first, then ask a question about that log.');
+      return;
+    }
     setLoading(true);
     setAnswer(null);
     setSources([]);
     setElapsed(null);
     const t0 = performance.now();
     try {
-      const result = await queryLogs(q, { filterAnomaliesOnly, topK });
+      const result = await queryLogs(q, {
+        filterAnomaliesOnly,
+        topK,
+        uploadId: activeUpload.upload_id,
+      });
       setAnswer(result.answer ?? result.response ?? JSON.stringify(result));
       setSources(result.sources ?? result.context ?? []);
       setElapsed(((performance.now() - t0) / 1000).toFixed(2));
@@ -53,7 +67,7 @@ export default function QueryCard({ onError }) {
     } finally {
       setLoading(false);
     }
-  }, [question, loading, filterAnomaliesOnly, topK, onError]);
+  }, [question, loading, canAsk, activeUpload, filterAnomaliesOnly, topK, onError]);
 
   const handleKey = (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit();
@@ -72,6 +86,9 @@ export default function QueryCard({ onError }) {
       <div className="block__head">
         <span className="block__num">02</span>
         <h2 className="block__title">Ask</h2>
+        <span className="block__hint">
+          {canAsk ? activeUpload.source_name || 'Current upload' : 'upload required'}
+        </span>
       </div>
 
       {/* ── Example chips ────────────────────────────────────────── */}
@@ -81,6 +98,7 @@ export default function QueryCard({ onError }) {
             key={q}
             className="chip"
             type="button"
+            disabled={!canAsk}
             onClick={() => {
               setQuestion(q);
               textareaRef.current?.focus();
@@ -98,13 +116,18 @@ export default function QueryCard({ onError }) {
           <textarea
             ref={textareaRef}
             rows={3}
-            placeholder="Ask a question about your logs… (Ctrl+Enter to submit)"
+            placeholder={
+              canAsk
+                ? `Ask about ${activeUpload.source_name || 'the current upload'}... (Ctrl+Enter to submit)`
+                : 'Upload a log first to enable questions'
+            }
             value={question}
             onChange={(e) => setQuestion(e.target.value.slice(0, MAX_QUESTION_LEN))}
             onKeyDown={handleKey}
             aria-label="Security query"
             spellCheck={false}
             maxLength={MAX_QUESTION_LEN}
+            disabled={!canAsk}
           />
           {question.length > MAX_QUESTION_LEN * 0.9 && (
             <span
@@ -124,7 +147,7 @@ export default function QueryCard({ onError }) {
           <button
             className="btn-glyph"
             onClick={submit}
-            disabled={loading || !question.trim()}
+            disabled={loading || !question.trim() || !canAsk}
             type="button"
             aria-label="Submit query"
           >
@@ -154,6 +177,7 @@ export default function QueryCard({ onError }) {
               checked={filterAnomaliesOnly}
               onChange={(e) => setFilterAnomaliesOnly(e.target.checked)}
               aria-label="Filter to anomalies only"
+              disabled={!canAsk}
             />
             <span className="toggle-track" />
           </label>
@@ -172,6 +196,7 @@ export default function QueryCard({ onError }) {
                 setTopK(Math.max(1, Math.min(20, Number(e.target.value) || 5)))
               }
               aria-label="Number of sources to retrieve"
+              disabled={!canAsk}
             />
           </div>
 
@@ -211,8 +236,9 @@ export default function QueryCard({ onError }) {
                   <ul style={{ listStyle: 'none', marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {sources.map((src, i) => (
                       <li key={i}>
+                        <div className="source-title">{renderSourceTitle(src, i)}</div>
                         {renderSourceMeta(src) && (
-                          <div style={{ fontFamily: 'var(--mono)', fontSize: '.7rem', color: 'var(--muted)', marginBottom: '4px' }}>
+                          <div className="source-meta">
                             {renderSourceMeta(src)}
                           </div>
                         )}

@@ -126,12 +126,10 @@ def parse_syslog(line: str) -> Optional[dict]:
 
     d = m.groupdict()
     msg = d.get("message", "")
-    # Try to extract an IP address from the message for source_ip
-    ip_match = re.search(r'\b(\d{1,3}(?:\.\d{1,3}){3})\b', msg)
 
     return {
         "timestamp":   d.get("timestamp"),
-        "source_ip":   ip_match.group(1) if ip_match else None,
+        "source_ip":   _extract_syslog_source(msg),
         "log_level":   _syslog_message_to_level(msg),
         "message":     msg,
         "raw":         line,
@@ -226,3 +224,20 @@ def _syslog_message_to_level(message: str) -> str:
     if any(k in msg_lower for k in ("warn", "invalid", "denied", "refused")):
         return "WARNING"
     return "INFO"
+
+
+def _extract_syslog_source(message: str) -> Optional[str]:
+    """Extract an actor host/IP from common syslog auth and daemon messages."""
+    rhost_match = re.search(r'\brhost=([^\s]+)', message)
+    if rhost_match and rhost_match.group(1).strip():
+        return rhost_match.group(1)
+
+    ip_match = re.search(r'\b(\d{1,3}(?:\.\d{1,3}){3})\b', message)
+    if ip_match:
+        return ip_match.group(1)
+
+    from_match = re.search(r'\bfrom\s+([^\s(]+)', message, flags=re.IGNORECASE)
+    if from_match and from_match.group(1).strip():
+        return from_match.group(1)
+
+    return None

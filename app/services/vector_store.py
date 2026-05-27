@@ -256,6 +256,7 @@ def get_all_anomalies(
     limit: int = 50,
     offset: int = 0,
     min_score: float = 0.0,
+    upload_id: Optional[str] = None,
     collection_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -271,7 +272,10 @@ def get_all_anomalies(
     """
     collection = get_or_create_collection(collection_name)
 
-    where_filter: Dict[str, Any] = {"is_anomaly": True}
+    filters: List[Dict[str, Any]] = [{"is_anomaly": True}]
+    if upload_id:
+        filters.append({"upload_id": upload_id})
+    where_filter: Dict[str, Any] = filters[0] if len(filters) == 1 else {"$and": filters}
 
     try:
         results = collection.get(
@@ -306,6 +310,7 @@ def get_all_anomalies(
 
 def count_anomalies(
     min_score: float = 0.0,
+    upload_id: Optional[str] = None,
     collection_name: Optional[str] = None,
 ) -> int:
     """
@@ -318,15 +323,19 @@ def count_anomalies(
         Integer count of matching anomalous documents.
     """
     collection = get_or_create_collection(collection_name)
+    filters: List[Dict[str, Any]] = [{"is_anomaly": True}]
+    if upload_id:
+        filters.append({"upload_id": upload_id})
+    where_filter: Dict[str, Any] = filters[0] if len(filters) == 1 else {"$and": filters}
     try:
         if min_score <= 0.0:
             # Fast path: fetch only IDs — skip document / metadata bytes
-            results = collection.get(where={"is_anomaly": True}, include=[])
+            results = collection.get(where=where_filter, include=[])
             return len(results["ids"])
         else:
             # Need metadata for score filtering
             results = collection.get(
-                where={"is_anomaly": True},
+                where=where_filter,
                 include=["metadatas"],
             )
             return sum(
@@ -335,4 +344,21 @@ def count_anomalies(
             )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"count_anomalies failed: {exc}")
+        return 0
+
+
+def count_documents(
+    upload_id: Optional[str] = None,
+    collection_name: Optional[str] = None,
+) -> int:
+    """Return document count, optionally restricted to one upload."""
+    collection = get_or_create_collection(collection_name)
+    if not upload_id:
+        return collection.count()
+
+    try:
+        results = collection.get(where={"upload_id": upload_id}, include=[])
+        return len(results["ids"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"count_documents failed: {exc}")
         return 0

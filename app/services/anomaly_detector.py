@@ -20,7 +20,9 @@ on every load to detect accidental or malicious tampering.
 from __future__ import annotations
 
 import hashlib
+import re
 import threading
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -42,6 +44,25 @@ _SUSPICIOUS_PATH_KEYWORDS = {
     "sqlmap", "nikto", "upload", "backup", "database", "phpmyadmin",
     "actuator", "console", ".git", ".DS_Store", ".htaccess",
 }
+
+_AUTH_FAILURE_MARKERS = (
+    "authentication failure",
+    "failed password",
+    "check pass; user unknown",
+    "couldn't authenticate",
+    "authentication failed",
+    "kerberos authentication failed",
+)
+
+_ROOT_ACCESS_MARKERS = (
+    "root login",
+    "user=root",
+)
+
+_FTP_CONNECTION_MARKERS = (
+    "ftpd",
+    "connection from",
+)
 
 
 @dataclass
@@ -142,6 +163,114 @@ def _features_to_matrix(features_list: List[Dict[str, float]]) -> np.ndarray:
     return np.array([[f[k] for k in keys] for f in features_list], dtype=float)
 
 
+def _entry_text(entry: LogEntry) -> str:
+    """Return combined raw/message text for rule-based checks."""
+    return f"{entry.message or ''}\n{entry.raw or ''}".lower()
+
+
+def _extract_actor(entry: LogEntry) -> str:
+    """Return the best available source host/IP from a log entry."""
+    if entry.source_ip:
+        return entry.source_ip
+
+    text = entry.raw or entry.message or ""
+    for pattern in (
+        r"\brhost=([^\s]+)",
+        r"\bfrom\s+([^\s(]+)",
+        r"\b(\d{1,3}(?:\.\d{1,3}){3})\b",
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match and match.group(1).strip():
+            return match.group(1)
+    return "unknown"
+
+
+def _mark_rule_anomaly(result: AnomalyResult, score: float, reason: str) -> None:
+    """Overlay a deterministic security rule on top of the model result."""
+    result.is_anomaly = True
+    result.anomaly_score = min(result.anomaly_score, score)
+    result.features["rule_anomaly"] = 1.0
+    result.features["rule_reason"] = reason
+
+
+def _apply_security_rules(results: List[AnomalyResult]) -> None:
+    """
+    Flag high-confidence security patterns that numeric features miss.
+
+    The IsolationForest remains useful for unusual HTTP/status/volume patterns,
+    while these rules catch classic syslog attack signals: repeated SSH/PAM
+    failures, root login attempts, FTP connection floods, Kerberos failures,
+    and abnormal service maintenance alerts.
+    """
+    auth_failures: dict[str, list[int]] = defaultdict(list)
+    root_failures: dict[str, list[int]] = defaultdict(list)
+    ftp_connections: dict[str, list[int]] = defaultdict(list)
+    kerberos_failures: dict[str, list[int]] = defaultdict(list)
+
+    for idx, result in enumerate(results):
+        entry = result.log_entry
+        text = _entry_text(entry)
+        actor = _extract_actor(entry)
+
+        is_auth_failure = any(marker in text for marker in _AUTH_FAILURE_MARKERS)
+        is_root_related = any(marker in text for marker in _ROOT_ACCESS_MARKERS)
+        is_ftp_connection = all(marker in text for marker in _FTP_CONNECTION_MARKERS)
+
+        if is_auth_failure:
+            auth_failures[actor].append(idx)
+        if is_auth_failure and is_root_related:
+            root_failures[actor].append(idx)
+        if is_ftp_connection:
+            ftp_connections[actor].append(idx)
+        if "kerberos authentication failed" in text or "klogind" in text and "authentication failed" in text:
+            kerberos_failures[actor].append(idx)
+
+        if "anonymous ftp login" in text:
+            _mark_rule_anomaly(result, -0.90, "anonymous_ftp_login")
+        elif "root login" in text:
+            _mark_rule_anomaly(result, -0.95, "root_console_login")
+        elif "alert exited abnormally" in text:
+            _mark_rule_anomaly(result, -0.65, "service_alert_exited_abnormally")
+        elif "getpeername" in text and "transport endpoint is not connected" in text:
+            _mark_rule_anomaly(result, -0.55, "ftp_transport_endpoint_error")
+
+    for actor, indices in auth_failures.items():
+        if len(indices) >= 5:
+            for idx in indices:
+                _mark_rule_anomaly(
+                    results[idx],
+                    -0.85,
+                    f"repeated_auth_failures:{actor}:{len(indices)}",
+                )
+
+    for actor, indices in root_failures.items():
+        if len(indices) >= 3:
+            for idx in indices:
+                _mark_rule_anomaly(
+                    results[idx],
+                    -0.92,
+                    f"repeated_root_auth_failures:{actor}:{len(indices)}",
+                )
+
+    for actor, indices in ftp_connections.items():
+        if len(indices) >= 8:
+            for idx in indices:
+                _mark_rule_anomaly(
+                    results[idx],
+                    -0.72,
+                    f"ftp_connection_burst:{actor}:{len(indices)}",
+                )
+
+    for actor, indices in kerberos_failures.items():
+        if len(indices) >= 3:
+            for idx in indices:
+                _mark_rule_anomaly(
+                    results[idx],
+                    -0.82,
+                    f"kerberos_auth_failure_burst:{actor}:{len(indices)}",
+                )
+
+
 # ---------------------------------------------------------------------------
 # IsolationForest wrapper
 # ---------------------------------------------------------------------------
@@ -230,6 +359,8 @@ class AnomalyDetector:
                     features=feat,
                 )
             )
+
+        _apply_security_rules(results)
 
         anomaly_count = sum(1 for r in results if r.is_anomaly)
         logger.info(

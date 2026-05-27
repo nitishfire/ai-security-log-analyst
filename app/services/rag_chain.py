@@ -144,6 +144,7 @@ def query(
     question: str,
     top_k: Optional[int] = None,
     filter_anomalies_only: bool = False,
+    upload_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run the full RAG pipeline for *question*.
@@ -158,6 +159,7 @@ def query(
         top_k:                 Number of context chunks to retrieve.
                                Defaults to RAG_TOP_K from config.
         filter_anomalies_only: If True, restrict retrieval to anomalous docs.
+        upload_id:             Optional id of one uploaded log to query.
 
     Returns:
         {
@@ -174,8 +176,15 @@ def query(
     # ── Retrieval ────────────────────────────────────────────────────────────
     t_retrieval_start = time.perf_counter()
     where_filter: Optional[Dict[str, Any]] = None
+    filters: List[Dict[str, Any]] = []
     if filter_anomalies_only:
-        where_filter = {"is_anomaly": True}
+        filters.append({"is_anomaly": True})
+    if upload_id:
+        filters.append({"upload_id": upload_id})
+    if len(filters) == 1:
+        where_filter = filters[0]
+    elif filters:
+        where_filter = {"$and": filters}
 
     try:
         results = vs.similarity_search(question, k=k, where=where_filter)

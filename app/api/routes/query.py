@@ -45,13 +45,15 @@ def query_logs(body: QueryRequest) -> QueryResponse:
 
     logger.info(
         f"Query received: '{question[:80]}' "
-        f"(top_k={body.top_k}, anomalies_only={body.filter_anomalies_only})"
+        f"(top_k={body.top_k}, anomalies_only={body.filter_anomalies_only}, "
+        f"upload_id={body.upload_id or 'any'})"
     )
 
     result = rag_chain.query(
         question=question,
         top_k=body.top_k,
         filter_anomalies_only=body.filter_anomalies_only,
+        upload_id=body.upload_id,
     )
 
     return QueryResponse(

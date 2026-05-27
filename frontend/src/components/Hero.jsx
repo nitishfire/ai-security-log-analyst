@@ -25,7 +25,7 @@ function useCountUp(target, duration = 900) {
   return value;
 }
 
-export default function Hero({ health, summary }) {
+export default function Hero({ health, summary, activeUpload }) {
   const totalLogs = useCountUp(summary?.total_logs ?? 0);
   const totalAnomalies = useCountUp(summary?.total_anomalies ?? 0);
   const rate = Number(summary?.anomaly_rate ?? 0);
@@ -70,7 +70,9 @@ export default function Hero({ health, summary }) {
           <div className="stat-block__num" aria-label={`${totalLogs} total logs`}>
             {totalLogs.toLocaleString()}
           </div>
-          <div className="stat-block__lbl">Total Logs Ingested</div>
+          <div className="stat-block__lbl">
+            {activeUpload ? 'Current Upload Chunks' : 'Current Upload Logs'}
+          </div>
         </div>
 
         {/* Anomalies + rate */}

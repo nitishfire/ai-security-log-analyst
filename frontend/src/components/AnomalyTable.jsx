@@ -22,7 +22,23 @@ function truncate(str, max = 120) {
   return str.length > max ? str.slice(0, max) + '…' : str;
 }
 
-export default function AnomalyTable({ refreshKey }) {
+function LogExcerpt({ text }) {
+  const excerpt = text || '—';
+  const isLong = excerpt.length > 160 || excerpt.includes('\n');
+
+  if (!isLong) {
+    return <pre className="anomaly-excerpt anomaly-excerpt--single">{excerpt}</pre>;
+  }
+
+  return (
+    <details className="anomaly-excerpt-details">
+      <summary>{truncate(excerpt, 140)}</summary>
+      <pre className="anomaly-excerpt">{excerpt}</pre>
+    </details>
+  );
+}
+
+export default function AnomalyTable({ refreshKey, uploadId }) {
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -31,6 +47,12 @@ export default function AnomalyTable({ refreshKey }) {
   const [error, setError] = useState(null);
 
   const load = useCallback(async () => {
+    if (!uploadId) {
+      setRows([]);
+      setTotal(0);
+      setError(null);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -38,6 +60,7 @@ export default function AnomalyTable({ refreshKey }) {
         limit: PAGE_SIZE,
         offset,
         min_score: minScore > 0 ? minScore : undefined,
+        uploadId,
       });
       // API returns AnomalyListResponse with `items` list
       setRows(data.items ?? data.anomalies ?? data.results ?? []);
@@ -47,11 +70,15 @@ export default function AnomalyTable({ refreshKey }) {
     } finally {
       setLoading(false);
     }
-  }, [offset, minScore, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [offset, minScore, uploadId, refreshKey]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    setOffset(0);
+  }, [uploadId]);
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
@@ -206,8 +233,8 @@ export default function AnomalyTable({ refreshKey }) {
                     >
                       {path}
                     </td>
-                    <td title={excerpt} style={{ maxWidth: '400px' }}>
-                      {truncate(excerpt)}
+                    <td className="anomaly-excerpt-cell">
+                      <LogExcerpt text={excerpt} />
                     </td>
                   </tr>
                 );

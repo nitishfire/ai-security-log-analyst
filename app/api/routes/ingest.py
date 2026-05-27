@@ -90,12 +90,16 @@ def _process_entries(
             path_preview = entry.path[:50]
         elif entry.message:
             path_preview = entry.message[:50]
+        chunk_is_anomaly = entry.is_anomaly or "[ANOMALY" in chunk
+        chunk_score = entry.anomaly_score
+        if chunk_is_anomaly and chunk_score >= 0:
+            chunk_score = -0.5
         metadatas.append({
             "chunk_index":   i,
             "upload_id":     upload_id,
             "source_name":   source_name,
-            "is_anomaly":    entry.is_anomaly,
-            "anomaly_score": entry.anomaly_score,
+            "is_anomaly":    chunk_is_anomaly,
+            "anomaly_score": chunk_score,
             "source_ip":     entry.source_ip or "",
             "status_code":   entry.status_code or 0,
             "path":          path_preview,

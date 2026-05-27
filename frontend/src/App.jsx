@@ -18,6 +18,7 @@ export default function App() {
   });
   const [toasts, setToasts] = useState([]);
   const [tableRefreshKey, setTableRefreshKey] = useState(0);
+  const [activeUpload, setActiveUpload] = useState(null);
 
   // ── Toast helpers ──────────────────────────────────────────────────────────
   const addToast = useCallback((message, type = 'info', duration = 4000) => {
@@ -30,13 +31,20 @@ export default function App() {
   }, []);
 
   // ── Poll health + summary every 10 s ──────────────────────────────────────
-  const refreshStats = useCallback(async () => {
-    const [h, s] = await Promise.allSettled([fetchHealth(), fetchAnomalySummary()]);
+  const refreshStats = useCallback(async (uploadIdOverride = activeUpload?.upload_id) => {
+    const summaryPromise = uploadIdOverride
+      ? fetchAnomalySummary({ uploadId: uploadIdOverride })
+      : Promise.resolve({
+          total_logs: 0,
+          total_anomalies: 0,
+          anomaly_rate: 0,
+        });
+    const [h, s] = await Promise.allSettled([fetchHealth(), summaryPromise]);
     if (h.status === 'fulfilled') setHealth(h.value);
     else setHealth((prev) => prev ?? { status: 'error' });
     if (s.status === 'fulfilled') setSummary(s.value);
     setTableRefreshKey((k) => k + 1);
-  }, []);
+  }, [activeUpload?.upload_id]);
 
   useEffect(() => {
     refreshStats();
@@ -54,11 +62,17 @@ export default function App() {
         result.count ??
         0;
       const chunks = result.chunks_stored ?? 0;
+      setActiveUpload({
+        upload_id: result.upload_id ?? null,
+        source_name: result.source_name ?? 'Current upload',
+        ingested_lines: count,
+        chunks_stored: chunks,
+      });
       addToast(
         `Ingested ${count} log ${count === 1 ? 'entry' : 'entries'} — ${chunks} chunks stored.`,
         'success'
       );
-      refreshStats();
+      refreshStats(result.upload_id ?? null);
     },
     [addToast, refreshStats]
   );
@@ -73,7 +87,7 @@ export default function App() {
       <Header health={health} />
 
       <main className="page">
-        <Hero health={health} summary={summary} />
+        <Hero health={health} summary={summary} activeUpload={activeUpload} />
 
         <UploadCard
           onSuccess={handleIngestSuccess}
@@ -81,9 +95,15 @@ export default function App() {
           onStatsChange={refreshStats}
         />
 
-        <QueryCard onError={(msg) => addToast(msg, 'error', 6000)} />
+        <QueryCard
+          activeUpload={activeUpload}
+          onError={(msg) => addToast(msg, 'error', 6000)}
+        />
 
-        <AnomalyTable refreshKey={tableRefreshKey} />
+        <AnomalyTable
+          refreshKey={tableRefreshKey}
+          uploadId={activeUpload?.upload_id ?? null}
+        />
       </main>
 
       <footer className="foot">

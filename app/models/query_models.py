@@ -60,6 +60,11 @@ class QueryRequest(BaseModel):
         False,
         description="When True, restrict retrieval to anomalous log chunks only",
     )
+    upload_id: str | None = Field(
+        None,
+        max_length=80,
+        description="Optional upload id to restrict the query to one ingested log",
+    )
     top_k: int = Field(5, ge=1, le=20, description="Number of chunks to retrieve")
 
     @field_validator("question")

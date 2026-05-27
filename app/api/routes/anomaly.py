@@ -53,11 +53,17 @@ async def list_anomalies(
     limit: int = Query(50, ge=1, le=200, description="Max results to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     min_score: float = Query(0.0, ge=-1.0, le=1.0, description="Minimum |anomaly_score| to include"),
+    upload_id: str | None = Query(None, max_length=80, description="Restrict results to one upload"),
 ) -> AnomalyListResponse:
     """
     Return a paginated list of log entries flagged as anomalies.
     """
-    raw = vs.get_all_anomalies(limit=limit, offset=offset, min_score=min_score)
+    raw = vs.get_all_anomalies(
+        limit=limit,
+        offset=offset,
+        min_score=min_score,
+        upload_id=upload_id,
+    )
 
     items: List[AnomalyEntry] = []
     for doc_id, doc, meta in zip(raw["ids"], raw["documents"], raw["metadatas"]):
@@ -72,7 +78,7 @@ async def list_anomalies(
         )
 
     # Efficient total count — no document fetch needed
-    total = count_anomalies(min_score=min_score)
+    total = count_anomalies(min_score=min_score, upload_id=upload_id)
 
     return AnomalyListResponse(
         items=items,
@@ -88,7 +94,9 @@ async def list_anomalies(
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(read_limiter)],
 )
-async def anomaly_summary() -> AnomalySummaryResponse:
+async def anomaly_summary(
+    upload_id: str | None = Query(None, max_length=80, description="Restrict summary to one upload"),
+) -> AnomalySummaryResponse:
     """
     Return aggregate statistics about all ingested logs.
 
@@ -97,20 +105,28 @@ async def anomaly_summary() -> AnomalySummaryResponse:
     """
     global _summary_cache, _summary_cache_at
 
-    # Serve from cache if fresh
-    if _summary_cache is not None and (time.monotonic() - _summary_cache_at) < _SUMMARY_CACHE_TTL:
+    # Serve global summary from cache if fresh. Upload-specific summaries are
+    # deliberately uncached so a fresh ingest updates the dashboard immediately.
+    if (
+        upload_id is None
+        and _summary_cache is not None
+        and (time.monotonic() - _summary_cache_at) < _SUMMARY_CACHE_TTL
+    ):
         return _summary_cache
 
     # ── Total logs ───────────────────────────────────────────────────────────
-    stats = vs.get_collection_stats()
-    total_logs = stats["count"]
+    total_logs = vs.count_documents(upload_id=upload_id)
 
     # ── Anomaly count and metadata ───────────────────────────────────────────
     # Fetch only IDs + metadata (no document text) to keep this fast.
     # Limit is set conservatively; for very large collections, this
     # could be replaced with a streaming/batch approach.
     _MAX_SUMMARY_DOCS = 5_000
-    anomaly_raw = vs.get_all_anomalies(limit=_MAX_SUMMARY_DOCS, offset=0)
+    anomaly_raw = vs.get_all_anomalies(
+        limit=_MAX_SUMMARY_DOCS,
+        offset=0,
+        upload_id=upload_id,
+    )
     total_anomalies = len(anomaly_raw["ids"])
 
     # Anomaly rate as a fraction (0.0–1.0) — NOT a percentage.
@@ -142,8 +158,9 @@ async def anomaly_summary() -> AnomalySummaryResponse:
         top_suspicious_ips=top_ips,
     )
 
-    # Store in cache
-    _summary_cache = result
-    _summary_cache_at = time.monotonic()
+    # Store only the global summary in cache
+    if upload_id is None:
+        _summary_cache = result
+        _summary_cache_at = time.monotonic()
 
     return result
